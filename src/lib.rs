@@ -1,8 +1,9 @@
 // Find all our documentation at https://docs.near.org
 
-use near_sdk::{env, log, near, store::Vector, Gas, PanicOnDefault, Promise};
+use near_sdk::{env, log, near, store::Vector, Gas, PanicOnDefault, Promise, PromiseResult};
 pub mod external;
 pub use crate::external::*;
+use tokio::{io::join, join};
 
 // Define the contract structure
 #[near(contract_state)]
@@ -108,19 +109,52 @@ impl Contract {
     //https://docs.near.org/sdk/rust/contract-structure/near-bindgen
     // possible DOS attack surface
     // lets just ignore all locking logic right now and focus on core functionality
-    pub fn claim_challenge(&mut self) -> bool {
+    pub fn initiate_claim(&mut self) -> bool {
         if self.potential_winners_left == 0
             || self.winner_count >= self.winner_limit
             || self.challenge_completed
             || self.ensure_expiration_status_is_correct()
-        // Might have to move into call back so I can check if we're a minter
-        // || self
-        //     .check_is_minter_callback(panic_on_not_minter, call_result)
-        //     .await?
         {
+            // Might have to move into call back so I can check if we're a minter
+            // || self
+            //     .check_is_minter_callback(panic_on_not_minter, call_result)
+            //     .await?
             return false;
         }
         self.decrement_winners();
+        let mut vec = Vec::new();
+        vec.push(1);
+        vec.push(2);
+
+        assert_eq!(vec.len(), 2);
+        assert_eq!(vec[0], 1);
+
+        let mut prromise = mintbase_nft::ext(self.challenge_list[0].parse().unwrap())
+            .with_static_gas(Gas::from_tgas(5))
+            .check_is_minter(env::current_account_id());
+
+        let res: Vec<Promise> = self
+            .challenge_list
+            .iter()
+            .map(|x| {
+                mintbase_nft::ext(x.parse().unwrap())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .check_is_minter(env::current_account_id())
+            })
+            .collect();
+
+        let b = res.into_iter().reduce(|a, b| a.and(b));
+        // Pattern match to retrieve the value
+        match b {
+            // The division was valid
+            Some(x) => x.then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .similar_contracts_callback(3),
+            ),
+            // The division was invalid
+            None => panic!("Error in the promises"),
+        };
 
         // for challenge in self.challenge_list.iter() {}
         // TODO: Check that challenges are completed
@@ -153,6 +187,33 @@ impl Contract {
             );
         // check if mint was successful in call back. If it was not increment potential winners.
         return true;
+    }
+
+    #[private]
+    pub fn similar_contracts_callback(&self, number_promises: u64) -> Vec<String> {
+        let t: Vec<_> = (0..number_promises)
+            .filter_map(|index| {
+                // env::promise_result(i) has the result of the i-th call
+                let result = env::promise_result(index);
+
+                match result {
+                    PromiseResult::Failed => {
+                        log!(format!("Promise number {index} failed."));
+                        None
+                    }
+                    PromiseResult::Successful(value) => {
+                        if let Ok(message) = near_sdk::serde_json::from_slice::<String>(&value) {
+                            log!(format!("Call {index} returned: {message}"));
+                            Some(message)
+                        } else {
+                            log!(format!("Error deserializing call {index} result."));
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+        panic!("Not implemented yet");
     }
 
     pub fn ensure_expiration_status_is_correct(&mut self) -> bool {
