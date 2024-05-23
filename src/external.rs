@@ -1,3 +1,4 @@
+use mockall::automock;
 // Find all our documentation at https://docs.near.org
 use near_sdk::{
     ext_contract,
@@ -36,6 +37,15 @@ pub struct TokenMetadata {
     pub reference_hash: Option<Base64VecU8>,
 }
 
+// Supports NEP-171, 177, 178, 181. Ref:
+/// https://github.com/near/NEPs/blob/master/specs/Standards/NonFungibleToken/Core.md
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TokenCompliant {
+    /// The id of this token on this `Store`. Not unique across `Store`s.
+    /// `token_id`s count up from 0. Ref: https://github.com/near/NEPs/discussions/171
+    pub token_id: String,
+}
+
 pub type SplitBetweenUnparsed = HashMap<AccountId, u32>;
 
 /// Unparsed pre-image of a Royalty struct. Used in `Store::mint_tokens`.
@@ -47,8 +57,16 @@ pub struct RoyaltyArgs {
 
 // Validator interface, for cross-contract calls
 #[ext_contract(mintbase_nft)]
+#[automock]
 trait MintbaseNft {
     fn check_is_minter(&self, account_id: near_sdk::AccountId) -> bool;
+
+    fn nft_tokens_for_owner(
+        &self,
+        account_id: AccountId,
+        from_index: Option<String>,
+        limit: Option<u32>,
+    ) -> Vec<TokenCompliant>;
 
     fn nft_batch_mint(
         &mut self,
