@@ -1,6 +1,7 @@
 use mockall::automock;
 // Find all our documentation at https://docs.near.org
 use near_sdk::{
+    borsh::{self, BorshDeserialize, BorshSerialize},
     ext_contract,
     json_types::Base64VecU8,
     serde::{Deserialize, Serialize},
@@ -10,7 +11,7 @@ use near_sdk::{
 use std::collections::HashMap;
 
 // missing borsh serialize and de serialize
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, BorshDeserialize, BorshSerialize)]
 pub struct TokenMetadata {
     /// the Title for this token. ex. "Arch Nemesis: Mail Carrier" or "Parcel 5055"
     pub title: Option<String>,

@@ -1,11 +1,12 @@
 // Find all our documentation at https://docs.near.org
 
+use external::TokenMetadata;
 use mockall::predicate::*;
 use near_sdk::{
     env, near,
     serde::{Deserialize, Serialize},
     store::{LookupMap, Vector},
-    AccountId, Gas, PanicOnDefault, Promise, PromiseResult,
+    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseResult,
 };
 pub mod external;
 pub use crate::external::*;
@@ -17,7 +18,7 @@ pub use crate::external::*;
     Serialize,
     // BorshDeserialize, BorshSerialize
 )]
-pub struct TokenMetadata {
+pub struct ChallengeMetaData {
     // the owner of this NFT Challenge
     pub owner_id: String,
     // the name for this challenge.
@@ -46,7 +47,6 @@ pub struct TokenMetadata {
 pub struct Contract {
     owner_id: String,
     creator_id: String,
-    id_prefix: String,
     name: String,
     description: String,
     image_link: String,
@@ -59,6 +59,7 @@ pub struct Contract {
     winner_count: u64,
     potential_winners_left: u64,
     winners: LookupMap<AccountId, u64>,
+    token_metadata: TokenMetadata,
 }
 
 // Implement the contract structure
@@ -67,7 +68,6 @@ impl Contract {
     #[init]
     pub fn new(
         owner_id: String,
-        id_prefix: String,
         name: String,
         description: String,
         image_link: String,
@@ -75,6 +75,7 @@ impl Contract {
         _challenge_nft_ids: std::vec::Vec<String>,
         termination_date_in_ns: u64,
         winner_limit: u64,
+        token_metadata: TokenMetadata,
     ) -> Self {
         let mut challenge_nft_ids = Vector::new(b"a");
         for challenge in _challenge_nft_ids.iter() {
@@ -89,7 +90,6 @@ impl Contract {
         Self {
             owner_id,
             creator_id: env::predecessor_account_id().to_string(),
-            id_prefix,
             name,
             description,
             image_link,
@@ -101,29 +101,41 @@ impl Contract {
             winner_count: 0,
             potential_winners_left: winner_limit,
             winners: LookupMap::new(b"z"),
+            token_metadata,
         }
     }
 
     // -------------------------- view methods ---------------------------
-    pub fn check_can_mint(&self, panic_on_not_minter: bool) -> Promise {
+    pub fn mint_nft(&self) -> Promise {
+        assert!(
+            self.check_account_is_winner(env::predecessor_account_id()),
+            "You must win the challenge to mint the NFT"
+        );
         let promise = mintbase_nft::ext(self.reward_nft.parse().unwrap())
             .with_static_gas(Gas::from_tgas(5))
-            .check_is_minter(env::current_account_id());
+            .with_attached_deposit(NearToken::from_millinear(54))
+            .nft_batch_mint(
+                env::predecessor_account_id(),
+                self.token_metadata.clone(),
+                1,
+                None,
+                None,
+            );
 
         return promise.then(
             // Create a promise to callback query_greeting_callback
             Self::ext(env::current_account_id())
                 .with_static_gas(Gas::from_tgas(5))
-                .check_is_minter_callback(panic_on_not_minter),
+                .mint_nft_callback(),
         );
     }
 
-    pub fn get_challenge_metadata(&self) -> TokenMetadata {
+    pub fn get_challenge_metadata(&self) -> ChallengeMetaData {
         let mut challenge_list = Vec::new();
         for challenge in self.challenge_nft_ids.iter() {
             challenge_list.push(challenge.clone());
         }
-        TokenMetadata {
+        ChallengeMetaData {
             owner_id: self.owner_id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
@@ -261,21 +273,14 @@ impl Contract {
 
     // -------------------------- private methods ---------------------------
     #[private]
-    pub fn check_is_minter_callback(
+    pub fn mint_nft_callback(
         &self,
-        panic_on_not_minter: bool,
         #[callback_result] call_result: Result<bool, near_sdk::PromiseError>,
-    ) -> bool {
+    ) {
         // Check if the promise succeeded by calling the method outlined in external.rs
-        if call_result.is_err() && panic_on_not_minter {
-            panic!("There was an error contacting NFT Contract");
-        } else if call_result.is_err() {
-            return false;
+        if call_result.is_err() {
+            panic!("There was an error minting the NFT");
         }
-        if call_result.unwrap() == false {
-            panic!("The NFT contract has not given us mint access");
-        }
-        true
     }
 
     // -------------------------- internal methods ---------------------------
@@ -319,14 +324,28 @@ mod tests {
     fn get_challenge_metadata() {
         let challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
             "reward_nft".to_string(),
-            vec!["challenge_nft_ids".to_string()],
+            vec![
+                "challenge_nft_ids".to_string(),
+                "challenge_nft_ids".to_string(),
+            ],
             1000000000000,
             10,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         let metadata = challenge.get_challenge_metadata();
         assert_eq!(metadata.owner_id, "owner_id");
@@ -335,7 +354,8 @@ mod tests {
         assert_eq!(metadata.image_link.unwrap(), "image_link");
         assert_eq!(metadata.reward_nft, "reward_nft");
         assert_eq!(metadata.challenge_nft_ids[0], "challenge_nft_ids");
-        assert_eq!(metadata.challenge_nft_ids.len(), 1);
+        assert_eq!(metadata.challenge_nft_ids[1], "challenge_nft_ids");
+        assert_eq!(metadata.challenge_nft_ids.len(), 2);
         assert_eq!(metadata.termination_date_in_ns, 1000000000000);
         assert_eq!(metadata.winner_limit, 10);
         assert_eq!(metadata.challenge_completed, false);
@@ -346,7 +366,6 @@ mod tests {
     fn get_owner_id() {
         let challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
@@ -354,6 +373,18 @@ mod tests {
             vec!["challenge_nft_ids".to_string()],
             1000000000000,
             10,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         assert_eq!(challenge.get_owner_id(), "owner_id");
     }
@@ -362,7 +393,6 @@ mod tests {
     fn is_challenge_expired() {
         let mut challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
@@ -370,6 +400,18 @@ mod tests {
             vec!["challenge_nft_ids".to_string()],
             1000000000000,
             10,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         assert_eq!(challenge.is_challenge_expired(), false);
         challenge.challenge_completed = true;
@@ -382,7 +424,6 @@ mod tests {
     fn potential_winners_left() {
         let mut challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
@@ -390,6 +431,18 @@ mod tests {
             vec!["challenge_nft_ids".to_string()],
             1000000000000,
             10,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         assert_eq!(challenge.potential_winners_left(), 10);
         challenge.decrement_winners();
@@ -402,7 +455,6 @@ mod tests {
     fn check_account_is_winner() {
         let mut challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
@@ -410,6 +462,18 @@ mod tests {
             vec!["challenge_nft_ids".to_string()],
             1000000000000,
             10,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         assert_eq!(
             challenge.check_account_is_winner(AccountId::from_str("account_id").unwrap()),
@@ -429,7 +493,6 @@ mod tests {
     fn initiate_claim_no_potential_winners_left() {
         let mut challenge = Contract::new(
             "owner_id".to_string(),
-            "id_prefix".to_string(),
             "name".to_string(),
             "description".to_string(),
             "image_link".to_string(),
@@ -437,6 +500,18 @@ mod tests {
             vec!["challenge_nft_ids".to_string()],
             1000000000000,
             1,
+            TokenMetadata {
+                title: None,
+                description: None,
+                media: None,
+                copies: None,
+                expires_at: None,
+                starts_at: None,
+                extra: None,
+                reference: None,
+                reference_hash: None,
+                media_hash: None,
+            },
         );
         challenge.decrement_winners();
         challenge.initiate_claim();
