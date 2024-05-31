@@ -39,6 +39,7 @@ pub struct ChallengeMetaData {
     pub challenge_completed: bool,
     // List of NFTS that are part of the challenge
     pub winners_count: u64,
+    pub reward_token_metadata: TokenMetadata,
 }
 
 // Define the contract structure
@@ -59,7 +60,7 @@ pub struct Contract {
     winner_count: u64,
     potential_winners_left: u64,
     winners: LookupMap<AccountId, u64>,
-    token_metadata: TokenMetadata,
+    reward_token_metadata: TokenMetadata,
 }
 
 // Implement the contract structure
@@ -75,7 +76,7 @@ impl Contract {
         _challenge_nft_ids: std::vec::Vec<String>,
         termination_date_in_ns: u64,
         winner_limit: u64,
-        token_metadata: TokenMetadata,
+        reward_token_metadata: TokenMetadata,
     ) -> Self {
         let mut challenge_nft_ids = Vector::new(b"a");
         for challenge in _challenge_nft_ids.iter() {
@@ -101,7 +102,7 @@ impl Contract {
             winner_count: 0,
             potential_winners_left: winner_limit,
             winners: LookupMap::new(b"z"),
-            token_metadata,
+            reward_token_metadata,
         }
     }
 
@@ -116,7 +117,7 @@ impl Contract {
             .with_attached_deposit(NearToken::from_millinear(54))
             .nft_batch_mint(
                 env::predecessor_account_id(),
-                self.token_metadata.clone(),
+                self.reward_token_metadata.clone(),
                 1,
                 None,
                 None,
@@ -146,6 +147,7 @@ impl Contract {
             winner_limit: self.winner_limit,
             challenge_completed: self.challenge_completed,
             winners_count: self.winner_count,
+            reward_token_metadata: self.reward_token_metadata.clone(),
         }
     }
 
