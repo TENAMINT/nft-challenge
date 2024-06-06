@@ -53,6 +53,8 @@ pub struct ChallengeMetaData {
     pub winners_count: u64,
     // Whether the challenge is completed or not.
     pub challenge_completed: bool,
+    // Whether the creator of this challenge can update the completion status.
+    creator_can_update: bool,
 }
 
 // Define the contract structure
@@ -88,6 +90,8 @@ pub struct Contract {
     potential_winners_left: u64,
     // Whether the challenge is completed or not.
     challenge_completed: bool,
+    // Whether the creator of this challenge can update the completion status.
+    creator_can_update: bool,
 }
 
 // Implement the contract structure
@@ -103,6 +107,8 @@ impl Contract {
         _challenge_nft_ids: std::vec::Vec<String>,
         expiration_date_in_ns: u64,
         winner_limit: u64,
+
+        creator_can_update: bool,
         reward_nft_metadata: NFTTokenMetadata,
     ) -> Self {
         let mut challenge_nft_ids = Vector::new(b"a");
@@ -129,14 +135,22 @@ impl Contract {
             potential_winners_left: winner_limit,
             winners: LookupMap::new(b"z"),
             reward_nft_metadata,
+            creator_can_update,
         }
     }
 
     // -------------------------- view methods ---------------------------
-    pub fn mint_nft(&self) -> Promise {
+    #[payable]
+    pub fn mint_nft(&mut self) -> Promise {
         assert!(
             self.is_account_winner(env::predecessor_account_id()),
             "You must win the challenge to mint the NFT"
+        );
+        assert!(
+            env::attached_deposit().as_millinear() >= 54,
+            "To cover minting fees, you need to attach at least {} millinear to this transaction.",
+            // TODO: Figure out more accurate bytes
+            54
         );
         let promise = mintbase_nft::ext(self.reward_nft_id.parse().unwrap())
             // TODO: Get better gas and storage fee estimates.
@@ -175,6 +189,7 @@ impl Contract {
             challenge_completed: self.challenge_completed,
             winners_count: self.winner_count,
             reward_nft_metadata: self.reward_nft_metadata.clone(),
+            creator_can_update: self.creator_can_update,
         }
     }
 
@@ -197,6 +212,10 @@ impl Contract {
 
     pub fn is_account_winner(&self, account_id: AccountId) -> bool {
         self.winners.contains_key(&account_id)
+    }
+
+    pub fn is_challenge_complete(&self) -> bool {
+        self.challenge_completed
     }
 
     // -------------------------- change methods ---------------------------
@@ -252,6 +271,15 @@ impl Contract {
         }
     }
 
+    pub fn update_challenge_completion_status(&mut self, is_complete: bool) {
+        self.assert_challenge_owner();
+        if self.creator_can_update {
+            self.challenge_completed = is_complete;
+        } else {
+            panic!("The creator cannot update the completion status of this challenge");
+        }
+    }
+
     #[private]
     pub fn on_claim(&mut self, winner_id: AccountId, number_promises: u64) -> bool {
         let res: Vec<bool> = (0..number_promises)
@@ -297,18 +325,11 @@ impl Contract {
         self.challenge_completed
     }
 
-    pub fn end_challenge(&mut self) {
-        self.assert_challenge_owner();
-        if self.challenge_completed == false {
-            self.challenge_completed = true;
-        }
-    }
-
     // -------------------------- private methods ---------------------------
     #[private]
     pub fn mint_nft_callback(
         &self,
-        #[callback_result] call_result: Result<bool, near_sdk::PromiseError>,
+        #[callback_result] call_result: Result<(), near_sdk::PromiseError>,
     ) {
         if call_result.is_err() {
             panic!("There was an error minting the NFT");
@@ -366,6 +387,7 @@ mod tests {
             ],
             1000000000000,
             1,
+            true,
             NFTTokenMetadata {
                 title: None,
                 description: None,
