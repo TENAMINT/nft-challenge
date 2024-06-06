@@ -1,6 +1,6 @@
 # nft-challenge
 
-cargo-near-new-project-description
+Smart contract for NFT challenges. NFT CHallenges are ways to reward users NFTs(or even RWAs) for completing challenges, where challenge "components" are represented as NFTS they've collected. Once they collect all challenge piece NFTs, their eligible to complete the challenge and be marked as a winner!
 
 ## How to Build Locally?
 
