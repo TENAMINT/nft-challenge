@@ -10,9 +10,9 @@ use near_sdk::{
 
 use std::collections::HashMap;
 
-// missing borsh serialize and de serialize
+// Mintbase's TokenMetadata structure.
 #[derive(Clone, Debug, Deserialize, Serialize, BorshDeserialize, BorshSerialize)]
-pub struct TokenMetadata {
+pub struct NFTTokenMetadata {
     /// the Title for this token. ex. "Arch Nemesis: Mail Carrier" or "Parcel 5055"
     pub title: Option<String>,
     /// free-form description of this token.
@@ -38,7 +38,6 @@ pub struct TokenMetadata {
     pub reference_hash: Option<Base64VecU8>,
 }
 
-// Supports NEP-171, 177, 178, 181. Ref:
 /// https://github.com/near/NEPs/blob/master/specs/Standards/NonFungibleToken/Core.md
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TokenCompliant {
@@ -72,7 +71,7 @@ trait MintbaseNft {
     fn nft_batch_mint(
         &mut self,
         owner_id: near_sdk::AccountId,
-        metadata: TokenMetadata,
+        metadata: NFTTokenMetadata,
         num_to_mint: u64,
         royalty_args: Option<RoyaltyArgs>,
         split_owners: Option<SplitBetweenUnparsed>,
