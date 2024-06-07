@@ -2,26 +2,15 @@ use std::process::{ExitCode, Termination};
 
 use mockall::predicate::*;
 use near_sdk::{
-    env, log, near,
+    env,
+    json_types::U64,
+    log, near,
     serde::{Deserialize, Serialize},
-    store::{LookupMap, Vector},
+    store::{LookupMap, LookupSet, Vector},
     AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseResult,
 };
 pub mod external;
 pub use crate::external::*;
-
-/**
- * TODO: Add burn functionality to burn the NFTs after the challenge is over,
- * current obstacle is how to do this without needed nft contracts to give us
- * burn permissions
- *
- * Can someone win a challenge multiple times? If so we need to burn challenge
- * nfts to prevent spam.
- *
- * If someone wins a challenge, can they transfer challenge nfts to another
- * account and win again?.
- *
- */
 
 impl Termination for Contract {
     fn report(self) -> std::process::ExitCode {
@@ -45,6 +34,8 @@ pub struct ChallengeMetaData {
     pub reward_nft_metadata: NFTTokenMetadata,
     // Ids of the challenge nfts that are part of this challenge.
     pub challenge_nft_ids: Vec<String>,
+    // Whether to burn the challenge piece at the associated index when claiming.
+    pub burn_challenge_piece_on_claim: Vec<bool>,
     // The expiration date of this challenge, expressed as a nano second timestamp.
     pub expiration_date_in_ns: u64,
     // Maximum number of winners for this challenge.
@@ -77,6 +68,8 @@ pub struct Contract {
     reward_nft_metadata: NFTTokenMetadata,
     // Ids of the challenge nfts that are part of this challenge.
     challenge_nft_ids: Vector<String>,
+    // Whether to burn the challenge piece at the associated index when claiming.
+    burn_challenge_piece_on_claim: Vector<bool>,
     // The expiration date of this challenge, expressed as a nano second timestamp.
     expiration_date_in_ns: u64,
     // Maximum number of winners for this challenge.
@@ -105,21 +98,37 @@ impl Contract {
         media_link: String,
         reward_nft_id: String,
         _challenge_nft_ids: std::vec::Vec<String>,
+        _burn_challenge_piece_on_claim: std::vec::Vec<bool>,
         expiration_date_in_ns: u64,
         winner_limit: u64,
-
         creator_can_update: bool,
         reward_nft_metadata: NFTTokenMetadata,
     ) -> Self {
-        let mut challenge_nft_ids = Vector::new(b"a");
-        for challenge in _challenge_nft_ids.iter() {
-            challenge_nft_ids.push(challenge.clone());
-        }
-
+        assert!(
+            env::is_valid_account_id(owner_id.as_bytes()),
+            "Owner's account ID is invalid",
+        );
+        assert_eq!(
+            _challenge_nft_ids.len(),
+            _burn_challenge_piece_on_claim.len(),
+            "The challenge nft ids and burn challenge piece on claim must be the same length"
+        );
         assert!(
             _challenge_nft_ids.len() > 0,
             "Challenge must have at least 1 challenge NFT"
         );
+        let mut challenge_nft_ids_set = LookupSet::new(b"t");
+        let mut challenge_nft_ids = Vector::new(b"a");
+        let mut burn_challenge_piece_on_claim = Vector::new(b"c");
+        for i in 0.._challenge_nft_ids.len() {
+            if challenge_nft_ids_set.contains(&_challenge_nft_ids[i]) {
+                panic!("Challenge NFT ids must be unique");
+            }
+            challenge_nft_ids.push(_challenge_nft_ids[i].clone());
+            challenge_nft_ids_set.insert(&_challenge_nft_ids[i]);
+            burn_challenge_piece_on_claim.push(_burn_challenge_piece_on_claim[i]);
+        }
+
         Self {
             owner_id,
             creator_id: env::predecessor_account_id().to_string(),
@@ -128,6 +137,7 @@ impl Contract {
             media_link,
             reward_nft_id,
             challenge_nft_ids,
+            burn_challenge_piece_on_claim,
             expiration_date_in_ns,
             winner_limit,
             challenge_completed: false,
@@ -140,42 +150,13 @@ impl Contract {
     }
 
     // -------------------------- view methods ---------------------------
-    #[payable]
-    pub fn mint_nft(&mut self) -> Promise {
-        assert!(
-            self.is_account_winner(env::predecessor_account_id()),
-            "You must win the challenge to mint the NFT"
-        );
-        assert!(
-            env::attached_deposit().as_millinear() >= 54,
-            "To cover minting fees, you need to attach at least {} millinear to this transaction.",
-            // TODO: Figure out more accurate bytes
-            54
-        );
-        let promise = mintbase_nft::ext(self.reward_nft_id.parse().unwrap())
-            // TODO: Get better gas and storage fee estimates.
-            .with_static_gas(Gas::from_tgas(5))
-            .with_attached_deposit(NearToken::from_millinear(54))
-            .nft_batch_mint(
-                env::predecessor_account_id(),
-                self.reward_nft_metadata.clone(),
-                1,
-                None,
-                None,
-            );
-
-        return promise.then(
-            // Create a promise to callback query_greeting_callback
-            Self::ext(env::current_account_id())
-                .with_static_gas(Gas::from_tgas(5))
-                .mint_nft_callback(),
-        );
-    }
 
     pub fn get_challenge_metadata(&self) -> ChallengeMetaData {
         let mut challenge_list = Vec::new();
-        for challenge in self.challenge_nft_ids.iter() {
-            challenge_list.push(challenge.clone());
+        let mut challenge_burn_list = Vec::new();
+        for i in 0..self.challenge_nft_ids.len() {
+            challenge_list.push(self.challenge_nft_ids[i].clone());
+            challenge_burn_list.push(self.burn_challenge_piece_on_claim[i]);
         }
         ChallengeMetaData {
             owner_id: self.owner_id.clone(),
@@ -184,6 +165,7 @@ impl Contract {
             media_link: Some(self.media_link.clone()),
             reward_nft_id: self.reward_nft_id.clone(),
             challenge_nft_ids: challenge_list,
+            burn_challenge_piece_on_claim: challenge_burn_list,
             expiration_date_in_ns: self.expiration_date_in_ns,
             winner_limit: self.winner_limit,
             challenge_completed: self.challenge_completed,
@@ -219,8 +201,41 @@ impl Contract {
     }
 
     // -------------------------- change methods ---------------------------
+
+    #[payable]
+    pub fn mint_nft(&mut self) -> Promise {
+        assert!(
+            self.is_account_winner(env::predecessor_account_id()),
+            "You must win the challenge to mint the NFT"
+        );
+        assert!(
+            env::attached_deposit().as_millinear() >= 54,
+            "To cover minting fees, you need to attach at least {} millinear to this transaction.",
+            // TODO: Figure out more accurate deposit
+            54
+        );
+        let promise = mintbase_nft::ext(self.reward_nft_id.parse().unwrap())
+            // TODO: Get better gas and storage fee estimates.
+            .with_static_gas(Gas::from_tgas(5))
+            .with_attached_deposit(NearToken::from_millinear(54))
+            .nft_batch_mint(
+                env::predecessor_account_id(),
+                self.reward_nft_metadata.clone(),
+                1,
+                None,
+                None,
+            );
+
+        return promise.then(
+            // Create a promise to callback query_greeting_callback
+            Self::ext(env::current_account_id())
+                .with_static_gas(Gas::from_tgas(5))
+                .mint_nft_callback(),
+        );
+    }
+
+    #[payable]
     pub fn initiate_claim(&mut self) -> Promise {
-        log!("max potential winners left {}", self.potential_winners_left);
         if self.potential_winners_left == 0 {
             panic!("Challenge currently at max potential winners");
         }
@@ -271,17 +286,9 @@ impl Contract {
         }
     }
 
-    pub fn update_challenge_completion_status(&mut self, is_complete: bool) {
-        self.assert_challenge_owner();
-        if self.creator_can_update {
-            self.challenge_completed = is_complete;
-        } else {
-            panic!("The creator cannot update the completion status of this challenge");
-        }
-    }
-
     #[private]
-    pub fn on_claim(&mut self, winner_id: AccountId, number_promises: u64) -> bool {
+    pub fn on_claim(&mut self, winner_id: AccountId, number_promises: u64) -> Option<Promise> {
+        let mut token_ids_to_burn: Vec<U64> = vec![];
         let res: Vec<bool> = (0..number_promises)
             .map(|index| {
                 // env::promise_result(i) has the result of the i-th call
@@ -293,7 +300,15 @@ impl Contract {
                         if let Ok(message) =
                             near_sdk::serde_json::from_slice::<Vec<TokenCompliant>>(&value)
                         {
-                            message.len() != 0
+                            if message.len() != 0 {
+                                if self.burn_challenge_piece_on_claim[index as u32] {
+                                    token_ids_to_burn
+                                        .push(U64(message[0].token_id.parse().unwrap()));
+                                }
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
@@ -301,21 +316,186 @@ impl Contract {
                 }
             })
             .collect();
-
         for i in 0..res.len() {
             if res[i] == false {
                 self.increment_winners();
-                log!(
-                    "max potential winners before 33 {}",
-                    self.potential_winners_left
-                );
                 log!("Account does not own any of challenge nfts at {}", i);
+                return None;
+            }
+        }
+        if token_ids_to_burn.len() == 0 {
+            self.winner_count += 1;
+            self.winners.insert(winner_id, 1);
+            return None;
+        }
+        Some(self.have_approvals_for_transfers(winner_id,token_ids_to_burn))
+    }
+
+    #[payable]
+    #[private]
+    pub fn have_approvals_for_transfers(&mut self, winner_id: AccountId,token_ids: Vec<U64>) -> Promise {
+        let mut is_approved_promises: Vec<Promise> = vec![];
+   
+        for i in 0..self.burn_challenge_piece_on_claim.len() {
+           
+            is_approved_promises.push(
+                mintbase_nft::ext(
+                    self.challenge_nft_ids[i.try_into().unwrap()]
+                        .parse()
+                        .unwrap(),
+                )
+                .with_static_gas(Gas::from_tgas(5))
+                .nft_approval_id(token_ids[i as usize], env::current_account_id()),
+            );
+        }
+        let compiled_promise = is_approved_promises.into_iter().reduce(|a, b| a.and(b));
+        if compiled_promise.is_none() {
+            panic!("No nfts to burn. Should not have reached here.");
+        } else {
+            compiled_promise.unwrap().then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .on_approval_check(winner_id,token_ids),
+            )
+        }
+    }
+
+    #[payable]
+    #[private]
+    pub fn on_approval_check(&mut self, winner_id: AccountId,token_ids: Vec<U64>) -> Promise {
+        let approvals : Vec<Option<u64>> = (0..token_ids.len())
+            .map(|index| {
+                // env::promise_result(i) has the result of the i-th call
+                let result: PromiseResult = env::promise_result(index as u64);
+               
+                match result {
+                    PromiseResult::Failed => {
+                        log!(
+                            "You must grant transfer approval for the challenge NFT at index {} for us to burn it",
+                            index
+                        );
+                        None
+                    },
+                    PromiseResult::Successful(value) => {
+                        if let Ok(message) =
+                            near_sdk::serde_json::from_slice::<u64>(&value)
+                        {
+                           Some(message)
+                        } else {
+                            log!("You must grant transfer approval for the challenge NFT at index {} for us to burn it",index);
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
+        for i in 0..approvals.len() {
+            if approvals[i] == None {
+                self.increment_winners();
+                return Promise::new(env::current_account_id()).as_return();
+            }
+        }
+        let mut transfer_promises: Vec<Promise> = vec![];
+        for i in 0..self.burn_challenge_piece_on_claim.len() {
+            transfer_promises.push(
+                mintbase_nft::ext(
+                    self.challenge_nft_ids[i.try_into().unwrap()]
+                        .parse()
+                        .unwrap(),
+                )
+                .with_static_gas(Gas::from_tgas(5))
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .nft_transfer(
+                    env::current_account_id(),
+                    token_ids[i as usize],
+                    approvals[i as usize].unwrap(),
+                    None,
+                ),
+            );
+        }
+        let compiled_promise = transfer_promises.into_iter().reduce(|a, b| a.and(b));
+        if compiled_promise.is_none() {
+            panic!("No nfts to burn. Should not have reached here.");
+        } else {
+            compiled_promise.unwrap().then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .burn_nfts(winner_id,token_ids),
+            )
+        }
+    }
+
+    #[payable]
+    #[private]
+    pub fn burn_nfts(&mut self,winner_id: AccountId, token_ids: Vec<U64>) -> Promise {
+        //TODO: check if transfers were completed successfully. If not, return the tokens to the user
+        let mut burn_promises: Vec<Promise> = vec![];
+        for i in 0..self.burn_challenge_piece_on_claim.len() {
+            burn_promises.push(
+                mintbase_nft::ext(
+                    self.challenge_nft_ids[i.try_into().unwrap()]
+                        .parse()
+                        .unwrap(),
+                )
+                .with_static_gas(Gas::from_tgas(5))
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .nft_batch_burn(vec![token_ids[i as usize].clone()]),
+            );
+        }
+        let burn_count = burn_promises.len() as u64; // Convert usize to u64
+        let compiled_promise = burn_promises.into_iter().reduce(|a, b| a.and(b));
+
+        if compiled_promise.is_none() {
+            panic!("No nfts to burn. Should not have reached here.");
+        } else {
+            compiled_promise.unwrap().then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(5))
+                    .on_burn_nfts(winner_id,burn_count),
+            )
+        }
+    }
+
+    #[private]
+    pub fn on_burn_nfts(&mut self,winner_id: AccountId, number_promises: u64) -> bool {
+        let results: Vec<bool> = (0..number_promises)
+            .map(|index| {
+                // env::promise_result(i) has the result of the i-th call
+                let result: PromiseResult = env::promise_result(index);
+                if result == PromiseResult::Failed {}
+                match result {
+                    PromiseResult::Failed => {
+                        log!(
+                            "There was an error burning the challenge NFT at index {}",
+                            index
+                        );
+                        false
+                    }
+                    PromiseResult::Successful(_) => {
+                        log!("NFT burned successfully at index {}", index);
+                        true
+                    }
+                }
+            })
+            .collect();
+        for i in 0..results.len() {
+            if results[i] == false {
+                self.increment_winners();
                 return false;
             }
         }
         self.winner_count += 1;
         self.winners.insert(winner_id, 1);
-        return true;
+        true
+    }
+
+    pub fn update_challenge_completion_status(&mut self, is_complete: bool) {
+        self.assert_challenge_owner();
+        if self.creator_can_update {
+            self.challenge_completed = is_complete;
+        } else {
+            panic!("The creator cannot update the completion status of this challenge");
+        }
     }
 
     pub fn ensure_challenge_not_expired(&mut self) -> bool {
@@ -353,11 +533,6 @@ impl Contract {
     }
 }
 
-/**
- *
- * TODO:
- * Add unit tests for initiate_claim and ensure_expiration status is correct
- */
 /*
  * The rest of this file holds the inline tests for the code above
  * Learn more about Rust tests: https://doc.rust-lang.org/book/ch11-01-writing-tests.html
@@ -382,9 +557,10 @@ mod tests {
             "media_link".to_string(),
             "reward_nft".to_string(),
             vec![
-                "challenge_nft_ids".to_string(),
-                "challenge_nft_ids".to_string(),
+                "challenge_nft_id1".to_string(),
+                "challenge_nft_id2".to_string(),
             ],
+            vec![true, false],
             1000000000000,
             1,
             true,
@@ -412,8 +588,10 @@ mod tests {
         assert_eq!(metadata.description, "description");
         assert_eq!(metadata.media_link.unwrap(), "media_link");
         assert_eq!(metadata.reward_nft_id, "reward_nft");
-        assert_eq!(metadata.challenge_nft_ids[0], "challenge_nft_ids");
-        assert_eq!(metadata.challenge_nft_ids[1], "challenge_nft_ids");
+        assert_eq!(metadata.challenge_nft_ids[0], "challenge_nft_id1");
+        assert_eq!(metadata.challenge_nft_ids[1], "challenge_nft_id2");
+        assert_eq!(metadata.burn_challenge_piece_on_claim[0], true);
+        assert_eq!(metadata.burn_challenge_piece_on_claim[1], false);
         assert_eq!(metadata.challenge_nft_ids.len(), 2);
         assert_eq!(metadata.expiration_date_in_ns, 1000000000000);
         assert_eq!(metadata.winner_limit, 1);
@@ -433,7 +611,6 @@ mod tests {
         assert_eq!(challenge.is_challenge_expired(), false);
         challenge.challenge_completed = true;
         challenge.expiration_date_in_ns = 0;
-        // TODO: FIx assertion by somehow mocking the block_timestamp
         assert_eq!(challenge.is_challenge_expired(), true);
     }
 

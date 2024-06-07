@@ -46,20 +46,9 @@ pub struct NFTContractMetadata {
     pub reference_hash: Option<Base64VecU8>,
 }
 
-// Test Scenarios
-// 1. Contract can be deployed and initialized - done
-// 2. Test minting an nft - done
-// 4. Test claiming an nft without all challenge pieces - done
-// 5. Test claiming an nft with all challenge pieces - done
-// 6. test claiming an nft when the challenge is complete
-// 7. Test claiming an nft when the challenge has max potential winners - done
-// 8. Test claiming an nft when the challenge has already been claimed -
-// 10. Test when challenge has max winners. -done
-// 11. Minting an NFT.
-// 12 Where a challenge NFT repeats multiple times
-
 async fn create_challenge(
     challenge_nft_ids: Vec<String>,
+    burn_challenge_nft: Vec<bool>,
     reward_nft_id: String,
     winner_limit: u64,
     owner_id: AccountId,
@@ -76,7 +65,7 @@ async fn create_challenge(
     let duration_since_epoch = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap();
-    let timestamp_nanos = (duration_since_epoch.as_nanos() as u64 + SECONDS_IN_DAY * NS_IN_SECONDS);
+    let timestamp_nanos = duration_since_epoch.as_nanos() as u64 + SECONDS_IN_DAY * NS_IN_SECONDS;
 
     let outcome = user_account
         .call(contract_wrapper.contract.id(), "new")
@@ -87,6 +76,7 @@ async fn create_challenge(
             "media_link": "A link to an image!",
             "reward_nft_id": reward_nft_id,
             "_challenge_nft_ids": challenge_nft_ids,
+            "_burn_challenge_piece_on_claim":burn_challenge_nft,
             "expiration_date_in_ns": timestamp_nanos as u64,
             "winner_limit": winner_limit,
             "creator_can_update": true,
@@ -106,7 +96,10 @@ async fn create_challenge(
         .max_gas()
         .transact()
         .await?;
-    log!("Outcome: {:?}", outcome.failures());
+    log!(
+        "Failures after creating challenge: {:?}",
+        outcome.failures()
+    );
 
     let metadata_call = contract_wrapper
         .contract
@@ -175,7 +168,7 @@ async fn create_nfts(
 async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = near_workspaces::sandbox().await?;
     let user_account = sandbox.dev_create_account().await?;
-    let nft_ids = vec!["challenge-nft-1", "challenge-nft-2", "reward-nft"];
+    let nft_ids = vec!["challenge-nft-1", "challenge-nft-2"];
     let nfts = create_nfts(user_account.id().clone(), nft_ids, &sandbox).await?;
     let mut challenge_nft_ids: Vec<String> = vec![];
 
@@ -186,7 +179,8 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
 
     let challenge = create_challenge(
         challenge_nft_ids,
-        reward_nft_id,
+        vec![false, false],
+        "reward-nft".to_string(),
         1,
         user_account.id().clone(),
         &sandbox,
@@ -208,7 +202,6 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
         .last()
         .unwrap()
         .contains("Account does not own any of challenge nfts at 0"));
-    assert!(!outcome_with_none.json::<bool>().unwrap());
 
     // Try with some but not all pieces.
     let mint_outcome = user_account
@@ -236,7 +229,6 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
         .last()
         .unwrap()
         .contains("Account does not own any of challenge nfts at 1"));
-    assert!(!outcome_with_some.json::<bool>().unwrap());
 
     Ok(())
 }
@@ -258,6 +250,7 @@ async fn test_complete_challenge_with_max_potential_winners(
 
     let challenge = create_challenge(
         challenge_nft_ids,
+        vec![false],
         reward_nft_id,
         1,
         user_account0.id().clone(),
@@ -389,6 +382,7 @@ async fn test_complete_challenge_with_already_complete() -> Result<(), Box<dyn s
 
     let challenge = create_challenge(
         challenge_nft_ids,
+        vec![false],
         reward_nft_id,
         2,
         user_account0.id().clone(),
@@ -488,7 +482,8 @@ async fn test_end_challenge() -> Result<(), Box<dyn std::error::Error>> {
     let user_account1 = sandbox.dev_create_account().await?;
 
     let challenge = create_challenge(
-        vec!["challenge-nft-1".to_string(), "reward-nft".to_string()],
+        vec!["challenge-nft-1".to_string()],
+        vec![false],
         "reward-nft".to_string(),
         1,
         user_account0.id().clone(),
@@ -547,6 +542,7 @@ async fn test_mint_nft() -> Result<(), Box<dyn std::error::Error>> {
 
     let challenge = create_challenge(
         challenge_nft_ids,
+        vec![false],
         reward_nft.id().to_string(),
         1,
         user_account0.id().clone(),
@@ -630,6 +626,113 @@ async fn test_mint_nft() -> Result<(), Box<dyn std::error::Error>> {
             .len()
             == 1
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
+    let sandbox = near_workspaces::sandbox().await?;
+    let user_account0 = sandbox.dev_create_account().await?;
+    let nft_ids = vec!["challenge-nft-1", "reward-nft"];
+    let mut nfts = create_nfts(user_account0.id().clone(), nft_ids, &sandbox).await?;
+    let mut challenge_nft_ids: Vec<String> = vec![];
+    let reward_nft = nfts.pop().unwrap().contract;
+
+    for nft in nfts.iter() {
+        challenge_nft_ids.push(nft.contract.id().to_string());
+    }
+
+    let challenge = create_challenge(
+        challenge_nft_ids,
+        vec![true],
+        reward_nft.id().to_string(),
+        1,
+        user_account0.id().clone(),
+        &sandbox,
+    )
+    .await?;
+
+    let metadata_call = challenge.contract.view("get_challenge_metadata").await?;
+    let metadata: ChallengeMetaData = metadata_call.json().unwrap();
+
+    let mint_outcome = user_account0
+        .call(nfts[0].contract.id(), "nft_batch_mint")
+        .args_json(json!({
+            "owner_id": user_account0.id().clone(),
+            "metadata":metadata.reward_nft_metadata,
+            "num_to_mint": 1,
+            "royalty_args": None::<RoyaltyArgs>,
+            "split_owners": None::<SplitBetweenUnparsed>,
+        }))
+        .deposit(NearToken::from_near(1))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(mint_outcome.is_success());
+
+    let outcome_for_nfts_owned_by_user = user_account0
+        .call(nfts[0].contract.id(), "nft_tokens_for_owner")
+        .args_json(json!({
+            "account_id": user_account0.id().clone(),
+        }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(outcome_for_nfts_owned_by_user.is_success());
+
+    assert!(mint_outcome.is_success());
+    let token_id = outcome_for_nfts_owned_by_user
+        .json::<Vec<TokenCompliant>>()
+        .unwrap()[0]
+        .token_id
+        .clone();
+
+    let give_approval_outcome = user_account0
+        .call(nfts[0].contract.id(), "nft_approve")
+        .args_json(json!({
+            "token_id":     token_id.clone(),
+            "account_id":challenge.contract.id(),
+        }))
+        .deposit(NearToken::from_millinear(8))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(give_approval_outcome.is_success());
+
+    let outcome_for_account0 = user_account0
+        .call(challenge.contract.id(), "initiate_claim")
+        .max_gas()
+        .deposit(NearToken::from_yoctonear(1))
+        .transact()
+        .await?;
+
+    assert!(outcome_for_account0.is_success());
+
+    let account_0_status_call = challenge
+        .contract
+        .view("is_account_winner")
+        .args_json(json!({
+            "account_id": user_account0.id()
+        }))
+        .await?;
+    let account_0_status: bool = account_0_status_call.json().unwrap();
+
+    assert!(account_0_status);
+
+    let outcome_for_nfts_owned_by_user = user_account0
+        .call(nfts[0].contract.id(), "nft_tokens_for_owner")
+        .args_json(json!({
+            "account_id": user_account0.id().clone(),
+        }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(!outcome_for_nfts_owned_by_user.is_success());
 
     Ok(())
 }

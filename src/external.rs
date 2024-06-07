@@ -76,4 +76,27 @@ trait MintbaseNft {
         royalty_args: Option<RoyaltyArgs>,
         split_owners: Option<SplitBetweenUnparsed>,
     ) -> PromiseOrValue<()>;
+
+    fn nft_batch_burn(&mut self, token_ids: Vec<near_sdk::json_types::U64>);
+
+    fn nft_is_approved(
+        &self,
+        token_id: String,
+        approved_account_id: AccountId,
+        approval_id: Option<u64>,
+    ) -> bool;
+
+    fn nft_approval_id(
+        &self,
+        token_id: near_sdk::json_types::U64,
+        account_id: AccountId,
+    ) -> Option<String>;
+
+    fn nft_transfer(
+        &mut self,
+        receiver_id: AccountId,
+        token_id: near_sdk::json_types::U64,
+        approval_id: u64,
+        memo: Option<String>,
+    );
 }
