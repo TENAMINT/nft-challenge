@@ -236,6 +236,10 @@ impl Contract {
 
     #[payable]
     pub fn initiate_claim(&mut self) -> Promise {
+        if(env::attached_deposit().as_yoctonear() < self.challenge_nft_ids.len().into()){
+            panic!("You must attach at least {} YOCTONEAR to claim the challenge", self.challenge_nft_ids.len());
+        }
+
         if self.potential_winners_left == 0 {
             panic!("Challenge currently at max potential winners");
         }
@@ -382,7 +386,7 @@ impl Contract {
                         {
                            Some(message)
                         } else {
-                            log!("You must grant transfer approval for the challenge NFT at index {} for us to burn it",index);
+                            log!("Unable to park approval id for NFT at {}",index);
                             None
                         }
                     }
@@ -419,7 +423,7 @@ impl Contract {
         } else {
             compiled_promise.unwrap().then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(5))
+                    .with_static_gas(Gas::from_tgas(10))
                     .burn_nfts(winner_id,token_ids),
             )
         }
@@ -638,13 +642,5 @@ mod tests {
             challenge.is_account_winner(AccountId::from_str("account_id").unwrap()),
             true
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "Challenge currently at max potential winners")]
-    fn initiate_claim_no_potential_winners_left() {
-        let mut challenge = new();
-        challenge.decrement_winners();
-        challenge.initiate_claim();
     }
 }

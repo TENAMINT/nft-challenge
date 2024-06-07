@@ -192,6 +192,7 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
     let outcome_with_none = user_account
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
 
@@ -222,6 +223,7 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
     let outcome_with_some = user_account
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
     assert!(outcome_with_some
@@ -298,11 +300,13 @@ async fn test_complete_challenge_with_max_potential_winners(
     let promise_for_account0 = user_account0
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact();
 
     let promise_for_account1 = user_account1
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact();
 
     let joint_promise: (
@@ -358,6 +362,7 @@ async fn test_complete_challenge_with_max_potential_winners(
     let outcome_for_loser = loser_account
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
 
@@ -428,6 +433,7 @@ async fn test_complete_challenge_with_already_complete() -> Result<(), Box<dyn s
     let outcome_for_account0 = user_account0
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
 
@@ -447,6 +453,7 @@ async fn test_complete_challenge_with_already_complete() -> Result<(), Box<dyn s
     let outcome_for_account0_again = user_account0
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
 
@@ -469,6 +476,7 @@ async fn test_complete_challenge_with_already_complete() -> Result<(), Box<dyn s
     let outcome_for_account1 = user_account1
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
     assert!(outcome_for_account1.is_failure());
@@ -572,6 +580,7 @@ async fn test_mint_nft() -> Result<(), Box<dyn std::error::Error>> {
     let outcome_for_account0 = user_account0
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
+        .deposit(NearToken::from_near(1))
         .transact()
         .await?;
 
