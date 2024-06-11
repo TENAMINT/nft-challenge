@@ -17,6 +17,11 @@ impl Termination for Contract {
         ExitCode::SUCCESS
     }
 }
+pub struct TransferTokenArgs {
+    token_id: U64,
+    approval_id: u64,
+    nft_id: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ChallengeMetaData {
@@ -216,7 +221,7 @@ impl Contract {
         );
         let promise = mintbase_nft::ext(self.reward_nft_id.parse().unwrap())
             // TODO: Get better gas and storage fee estimates.
-            .with_static_gas(Gas::from_tgas(5))
+            // .with_static_gas(Gas::from_tgas(10))
             .with_attached_deposit(NearToken::from_millinear(54))
             .nft_batch_mint(
                 env::predecessor_account_id(),
@@ -229,15 +234,18 @@ impl Contract {
         return promise.then(
             // Create a promise to callback query_greeting_callback
             Self::ext(env::current_account_id())
-                .with_static_gas(Gas::from_tgas(5))
+                // .with_static_gas(Gas::from_tgas(10))
                 .mint_nft_callback(),
         );
     }
 
     #[payable]
     pub fn initiate_claim(&mut self) -> Promise {
-        if(env::attached_deposit().as_yoctonear() < self.challenge_nft_ids.len().into()){
-            panic!("You must attach at least {} YOCTONEAR to claim the challenge", self.challenge_nft_ids.len());
+        if env::attached_deposit().as_yoctonear() < self.challenge_nft_ids.len().into() {
+            panic!(
+                "You must attach at least {} YOCTONEAR to claim the challenge",
+                self.challenge_nft_ids.len()
+            );
         }
 
         if self.potential_winners_left == 0 {
@@ -271,7 +279,6 @@ impl Contract {
                     .nft_tokens_for_owner(env::predecessor_account_id(), None, None)
             })
             .collect();
-
         let compiled_promise = challenge_nft_ownership_promises
             .into_iter()
             .reduce(|a, b| a.and(b));
@@ -332,23 +339,26 @@ impl Contract {
             self.winners.insert(winner_id, 1);
             return None;
         }
-        Some(self.have_approvals_for_transfers(winner_id,token_ids_to_burn))
+
+        Some(self.have_approvals_for_transfers(winner_id, token_ids_to_burn))
     }
 
     #[payable]
     #[private]
-    pub fn have_approvals_for_transfers(&mut self, winner_id: AccountId,token_ids: Vec<U64>) -> Promise {
+    pub fn have_approvals_for_transfers(
+        &mut self,
+        winner_id: AccountId,
+        token_ids: Vec<U64>,
+    ) -> Promise {
         let mut is_approved_promises: Vec<Promise> = vec![];
-   
         for i in 0..self.burn_challenge_piece_on_claim.len() {
-           
             is_approved_promises.push(
                 mintbase_nft::ext(
                     self.challenge_nft_ids[i.try_into().unwrap()]
                         .parse()
                         .unwrap(),
                 )
-                .with_static_gas(Gas::from_tgas(5))
+                .with_static_gas(Gas::from_tgas(1))
                 .nft_approval_id(token_ids[i as usize], env::current_account_id()),
             );
         }
@@ -358,20 +368,19 @@ impl Contract {
         } else {
             compiled_promise.unwrap().then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(5))
-                    .on_approval_check(winner_id,token_ids),
+                    .with_static_gas(Gas::from_tgas(60))
+                    .on_approval_check(winner_id, token_ids),
             )
         }
     }
 
     #[payable]
     #[private]
-    pub fn on_approval_check(&mut self, winner_id: AccountId,token_ids: Vec<U64>) -> Promise {
+    pub fn on_approval_check(&mut self, winner_id: AccountId, token_ids: Vec<U64>) -> Promise {
         let approvals : Vec<Option<u64>> = (0..token_ids.len())
             .map(|index| {
                 // env::promise_result(i) has the result of the i-th call
                 let result: PromiseResult = env::promise_result(index as u64);
-               
                 match result {
                     PromiseResult::Failed => {
                         log!(
@@ -386,7 +395,7 @@ impl Contract {
                         {
                            Some(message)
                         } else {
-                            log!("Unable to park approval id for NFT at {}",index);
+                            log!("Unable to get approval id for NFT at {}",index);
                             None
                         }
                     }
@@ -423,16 +432,72 @@ impl Contract {
         } else {
             compiled_promise.unwrap().then(
                 Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(10))
-                    .burn_nfts(winner_id,token_ids),
+                    .with_static_gas(Gas::from_tgas(40))
+                    .burn_nfts(winner_id, token_ids, approvals),
             )
         }
     }
 
     #[payable]
     #[private]
-    pub fn burn_nfts(&mut self,winner_id: AccountId, token_ids: Vec<U64>) -> Promise {
-        //TODO: check if transfers were completed successfully. If not, return the tokens to the user
+    pub fn burn_nfts(
+        &mut self,
+        winner_id: AccountId,
+        token_ids: Vec<U64>,
+        approvals: Vec<Option<u64>>,
+    ) -> Promise {
+        let mut challenge_nfts_to_burn: Vec<String> = vec![];
+        for i in 0..self.burn_challenge_piece_on_claim.len() {
+            if self.burn_challenge_piece_on_claim[i] {
+                challenge_nfts_to_burn.push(self.challenge_nft_ids[i.try_into().unwrap()].clone());
+            }
+        }
+
+        let mut unsuccessful_token_id_transfers: Vec<TransferTokenArgs> = vec![];
+        for i in 0..token_ids.len() {
+            let result: PromiseResult = env::promise_result(i as u64);
+            match result {
+                PromiseResult::Failed => {
+                    log!(
+                        "There was an error transferring the challenge NFT at index {}",
+                        i
+                    );
+                    unsuccessful_token_id_transfers.push(TransferTokenArgs {
+                        token_id: token_ids[i].clone(),
+                        approval_id: approvals[i as usize].unwrap(),
+                        nft_id: challenge_nfts_to_burn[i].clone(),
+                    });
+                }
+                PromiseResult::Successful(_) => {
+                    log!("NFT transferred successfully at index {}", i);
+                }
+            }
+        }
+
+        let mut transfer_refund: Vec<Promise> = vec![];
+        for i in 0..unsuccessful_token_id_transfers.len() {
+            transfer_refund.push(
+                mintbase_nft::ext(
+                    unsuccessful_token_id_transfers[i as usize]
+                        .nft_id
+                        .parse()
+                        .unwrap(),
+                )
+                .with_static_gas(Gas::from_tgas(5))
+                .with_attached_deposit(NearToken::from_yoctonear(1))
+                .nft_transfer(
+                    winner_id.clone(),
+                    unsuccessful_token_id_transfers[i as usize].token_id,
+                    unsuccessful_token_id_transfers[i as usize].approval_id,
+                    None,
+                ),
+            );
+        }
+        let transfer_refund_promise = transfer_refund.into_iter().reduce(|a, b| a.and(b));
+        if transfer_refund_promise.is_some() {
+            log!("Refunding NFTs");
+            return transfer_refund_promise.unwrap();
+        }
         let mut burn_promises: Vec<Promise> = vec![];
         for i in 0..self.burn_challenge_piece_on_claim.len() {
             burn_promises.push(
@@ -448,20 +513,19 @@ impl Contract {
         }
         let burn_count = burn_promises.len() as u64; // Convert usize to u64
         let compiled_promise = burn_promises.into_iter().reduce(|a, b| a.and(b));
-
         if compiled_promise.is_none() {
             panic!("No nfts to burn. Should not have reached here.");
         } else {
             compiled_promise.unwrap().then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(Gas::from_tgas(5))
-                    .on_burn_nfts(winner_id,burn_count),
+                    .on_burn_nfts(winner_id, burn_count),
             )
         }
     }
 
     #[private]
-    pub fn on_burn_nfts(&mut self,winner_id: AccountId, number_promises: u64) -> bool {
+    pub fn on_burn_nfts(&mut self, winner_id: AccountId, number_promises: u64) -> bool {
         let results: Vec<bool> = (0..number_promises)
             .map(|index| {
                 // env::promise_result(i) has the result of the i-th call

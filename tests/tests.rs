@@ -1,7 +1,7 @@
 use std::process::{ExitCode, Termination};
 
 use near_sdk::{json_types::Base64VecU8, log};
-use near_sdk::{AccountId, NearToken};
+use near_sdk::{AccountId, Gas, NearToken};
 use near_workspaces::error::Error;
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
@@ -175,7 +175,6 @@ async fn test_complete_challenge_without_all_pieces() -> Result<(), Box<dyn std:
     for nft in nfts.iter() {
         challenge_nft_ids.push(nft.contract.id().to_string());
     }
-    let reward_nft_id = nfts.last().unwrap().contract.id().to_string();
 
     let challenge = create_challenge(
         challenge_nft_ids,
@@ -643,7 +642,7 @@ async fn test_mint_nft() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox = near_workspaces::sandbox().await?;
     let user_account0 = sandbox.dev_create_account().await?;
-    let nft_ids = vec!["challenge-nft-1", "reward-nft"];
+    let nft_ids = vec!["challenge-nft-1", "challenge-nft-2", "reward-nft"];
     let mut nfts = create_nfts(user_account0.id().clone(), nft_ids, &sandbox).await?;
     let mut challenge_nft_ids: Vec<String> = vec![];
     let reward_nft = nfts.pop().unwrap().contract;
@@ -654,7 +653,7 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
 
     let challenge = create_challenge(
         challenge_nft_ids,
-        vec![true],
+        vec![true, true],
         reward_nft.id().to_string(),
         1,
         user_account0.id().clone(),
@@ -665,8 +664,24 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
     let metadata_call = challenge.contract.view("get_challenge_metadata").await?;
     let metadata: ChallengeMetaData = metadata_call.json().unwrap();
 
-    let mint_outcome = user_account0
+    let mut mint_outcome = user_account0
         .call(nfts[0].contract.id(), "nft_batch_mint")
+        .args_json(json!({
+            "owner_id": user_account0.id().clone(),
+            "metadata":metadata.reward_nft_metadata,
+            "num_to_mint": 1,
+            "royalty_args": None::<RoyaltyArgs>,
+            "split_owners": None::<SplitBetweenUnparsed>,
+        }))
+        .deposit(NearToken::from_near(1))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(mint_outcome.is_success());
+
+    mint_outcome = user_account0
+        .call(nfts[1].contract.id(), "nft_batch_mint")
         .args_json(json!({
             "owner_id": user_account0.id().clone(),
             "metadata":metadata.reward_nft_metadata,
@@ -692,14 +707,13 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(outcome_for_nfts_owned_by_user.is_success());
 
-    assert!(mint_outcome.is_success());
-    let token_id = outcome_for_nfts_owned_by_user
+    let mut token_id = outcome_for_nfts_owned_by_user
         .json::<Vec<TokenCompliant>>()
         .unwrap()[0]
         .token_id
         .clone();
 
-    let give_approval_outcome = user_account0
+    let mut give_approval_outcome = user_account0
         .call(nfts[0].contract.id(), "nft_approve")
         .args_json(json!({
             "token_id":     token_id.clone(),
@@ -712,27 +726,27 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
 
     assert!(give_approval_outcome.is_success());
 
-    let outcome_for_account0 = user_account0
+    let mut outcome_for_account0 = user_account0
         .call(challenge.contract.id(), "initiate_claim")
         .max_gas()
-        .deposit(NearToken::from_yoctonear(1))
+        .deposit(NearToken::from_yoctonear(2))
         .transact()
         .await?;
 
     assert!(outcome_for_account0.is_success());
 
-    let account_0_status_call = challenge
+    let mut account_0_status_call = challenge
         .contract
         .view("is_account_winner")
         .args_json(json!({
             "account_id": user_account0.id()
         }))
         .await?;
-    let account_0_status: bool = account_0_status_call.json().unwrap();
+    let mut account_0_status: bool = account_0_status_call.json().unwrap();
 
-    assert!(account_0_status);
+    assert!(!account_0_status);
 
-    let outcome_for_nfts_owned_by_user = user_account0
+    let mut outcome_owning_challenge_pieces = user_account0
         .call(nfts[0].contract.id(), "nft_tokens_for_owner")
         .args_json(json!({
             "account_id": user_account0.id().clone(),
@@ -741,7 +755,78 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
         .transact()
         .await?;
 
-    assert!(!outcome_for_nfts_owned_by_user.is_success());
+    assert!(outcome_owning_challenge_pieces.is_success());
 
+    outcome_owning_challenge_pieces = user_account0
+        .call(nfts[1].contract.id(), "nft_tokens_for_owner")
+        .args_json(json!({
+            "account_id": user_account0.id().clone(),
+        }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(outcome_owning_challenge_pieces.is_success());
+
+    token_id = outcome_owning_challenge_pieces
+        .json::<Vec<TokenCompliant>>()
+        .unwrap()[0]
+        .token_id
+        .clone();
+
+    give_approval_outcome = user_account0
+        .call(nfts[1].contract.id(), "nft_approve")
+        .args_json(json!({
+            "token_id":     token_id.clone(),
+            "account_id":challenge.contract.id(),
+        }))
+        .deposit(NearToken::from_millinear(8))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(give_approval_outcome.is_success());
+
+    outcome_for_account0 = user_account0
+        .call(challenge.contract.id(), "initiate_claim")
+        .gas(Gas::from_tgas(300))
+        .deposit(NearToken::from_yoctonear(2))
+        .transact()
+        .await?;
+
+    assert!(outcome_for_account0.is_success());
+
+    account_0_status_call = challenge
+        .contract
+        .view("is_account_winner")
+        .args_json(json!({
+            "account_id": user_account0.id()
+        }))
+        .await?;
+    account_0_status = account_0_status_call.json().unwrap();
+
+    assert!(account_0_status);
+
+    outcome_owning_challenge_pieces = user_account0
+        .call(nfts[0].contract.id(), "nft_tokens_for_owner")
+        .args_json(json!({
+            "account_id": user_account0.id().clone(),
+        }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(!outcome_owning_challenge_pieces.is_success());
+
+    outcome_owning_challenge_pieces = user_account0
+        .call(nfts[1].contract.id(), "nft_tokens_for_owner")
+        .args_json(json!({
+            "account_id": user_account0.id().clone(),
+        }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(!outcome_owning_challenge_pieces.is_success());
     Ok(())
 }
