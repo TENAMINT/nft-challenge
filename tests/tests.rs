@@ -794,6 +794,10 @@ async fn test_burn_nfts() -> Result<(), Box<dyn std::error::Error>> {
         .transact()
         .await?;
 
+    log!(
+        "Outcome for account 0: {:?}",
+        outcome_for_account0.failures()
+    );
     assert!(outcome_for_account0.is_success());
 
     account_0_status_call = challenge
