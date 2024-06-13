@@ -2,6 +2,11 @@
 
 Smart contract for NFT challenges. NFT Challenges are ways to reward users NFTs(or even RWAs) for completing challenges, where challenge "components" are represented as NFTS they've collected. Once they collect all challenge piece NFTs, their eligible to complete the challenge and be marked as a winner!
 
+## Important: 
+If you plan on burning challenge NFTs on completion, make sure users who try to complete the challenge **give the challenge contract transfer approval for their challenge piece NFTs**, so that the challenge contract can burn them.
+If you plan on minting the reward NFT through the challenge contract, ensure you make the **challenge contract a minter of the reward NFT contract**.
+
+
 ## How to Build Locally?
 
 Install [`cargo-near`](https://github.com/near/cargo-near) and run:
