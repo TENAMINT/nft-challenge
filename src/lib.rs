@@ -1,6 +1,5 @@
 use std::process::{ExitCode, Termination};
 
-use mockall::predicate::*;
 use near_sdk::{
     env,
     json_types::U64,
@@ -49,8 +48,8 @@ pub struct ChallengeMetaData {
     pub winners_count: u64,
     // Whether the challenge is completed or not.
     pub challenge_completed: bool,
-    // Whether the creator of this challenge can update the completion status.
-    creator_can_update: bool,
+    // Whether the creator of this challenge can update the challenge status.
+    pub creator_can_update: bool,
 }
 
 // Define the contract structure
@@ -84,11 +83,13 @@ pub struct Contract {
     // The list of winners for this challenge. This is a map and not a set
     // in case we want to let winners win multiple times.
     winners: LookupMap<AccountId, u64>,
-    // The number of potential winners left for this challenge.
+    // The number of potential winners left for this challenge, it includes
+    // accounts currently going through the claim process, to ensure we don't
+    // have more winners than the winner limit.
     potential_winners_left: u64,
     // Whether the challenge is completed or not.
     challenge_completed: bool,
-    // Whether the creator of this challenge can update the completion status.
+    // Whether the creator of this challenge can update the challenge status.
     creator_can_update: bool,
 }
 
@@ -212,13 +213,12 @@ impl Contract {
             "You must win the challenge to mint the NFT"
         );
         assert!(
+            // Approximate minting fee for a single NFT.
             env::attached_deposit().as_millinear() >= 54,
             "To cover minting fees, you need to attach at least {} millinear to this transaction.",
-            // TODO: Figure out more accurate deposit
             54
         );
         let promise = mintbase_nft::ext(self.reward_nft_id.parse().unwrap())
-            // TODO: Get better gas and storage fee estimates.
             .with_static_gas(Gas::from_tgas(5))
             .with_attached_deposit(NearToken::from_millinear(54))
             .nft_batch_mint(
@@ -238,7 +238,8 @@ impl Contract {
 
     #[payable]
     pub fn initiate_claim(&mut self) -> Promise {
-        if env::attached_deposit().as_yoctonear() < self.challenge_nft_ids.len().into() {
+        // Need 2 YOCOTNEAR per challenge NFT to claim the challenge.
+        if env::attached_deposit().as_yoctonear() < (self.challenge_nft_ids.len() * 2).into() {
             panic!(
                 "You must attach at least {} YOCTONEAR to claim the challenge",
                 self.challenge_nft_ids.len()
@@ -265,6 +266,7 @@ impl Contract {
             panic!("You have already won this challenge");
         }
 
+        // To ensure we don't have more winners than the winner limit.
         self.decrement_winners();
 
         let challenge_nft_ownership_promises: Vec<Promise> = self
@@ -290,7 +292,7 @@ impl Contract {
                     ),
             ),
             // Should never hit because we always have at least 1 challenge
-            None => panic!("Error in the promises"),
+            None => panic!("Error in the challenge nft ownership promises"),
         }
     }
 
@@ -326,12 +328,16 @@ impl Contract {
         for i in 0..res.len() {
             if res[i] == false {
                 self.increment_winners();
-                log!("Account does not own any of challenge nfts at {}", i);
+                log!(
+                    "Account does not own any of the challenge nfts at index {}",
+                    i
+                );
                 return Promise::new(env::current_account_id()).as_return();
             }
         }
         if token_ids_to_burn.len() == 0 {
-            // Done the claim process here
+            // Complete the claim process here since we have verified they
+            // own all challenge nfts and we do not need to burn any.
             self.winner_count += 1;
             self.winners.insert(winner_id, 1);
             return Promise::new(env::current_account_id()).as_return();
@@ -425,7 +431,7 @@ impl Contract {
         }
         let compiled_promise = transfer_promises.into_iter().reduce(|a, b| a.and(b));
         if compiled_promise.is_none() {
-            panic!("No nfts to burn. Should not have reached here.");
+            panic!("No nfts to transfer. Should not have reached here.");
         } else {
             compiled_promise.unwrap().then(
                 Self::ext(env::current_account_id())
@@ -525,32 +531,26 @@ impl Contract {
 
     #[private]
     pub fn on_burn_nfts(&mut self, winner_id: AccountId, number_promises: u64) -> bool {
-        let results: Vec<bool> = (0..number_promises)
-            .map(|index| {
-                // env::promise_result(i) has the result of the i-th call
-                let result: PromiseResult = env::promise_result(index);
-                if result == PromiseResult::Failed {}
-                match result {
-                    PromiseResult::Failed => {
-                        log!(
-                            "There was an error burning the challenge NFT at index {}",
-                            index
-                        );
-                        false
-                    }
-                    PromiseResult::Successful(_) => {
-                        log!("NFT burned successfully at index {}", index);
-                        true
-                    }
+        for index in 0..number_promises {
+            // env::promise_result(i) has the result of the i-th call
+            let result: PromiseResult = env::promise_result(index);
+            if result == PromiseResult::Failed {}
+            match result {
+                PromiseResult::Failed => {
+                    log!(
+                        "There was an error burning the challenge NFT at index {}",
+                        index
+                    );
                 }
-            })
-            .collect();
-        for i in 0..results.len() {
-            if results[i] == false {
-                self.increment_winners();
-                return false;
+                PromiseResult::Successful(_) => {
+                    log!("NFT burned successfully at index {}", index);
+                }
             }
         }
+        // Even if burn failed we want to increment winners and mark them down
+        // as a winner, since the contract now owns all the challenge NFTs, and
+        // the user has none. This is to prevent them from claiming again, an
+        // unofficial burn.
         self.winner_count += 1;
         self.winners.insert(winner_id, 1);
         true

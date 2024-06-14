@@ -1,4 +1,3 @@
-use mockall::automock;
 use near_sdk::{
     borsh::{self, BorshDeserialize, BorshSerialize},
     ext_contract,
@@ -12,9 +11,9 @@ use std::collections::HashMap;
 // Mintbase's TokenMetadata structure.
 #[derive(Clone, Debug, Deserialize, Serialize, BorshDeserialize, BorshSerialize)]
 pub struct NFTTokenMetadata {
-    /// the Title for this token. ex. "Arch Nemesis: Mail Carrier" or "Parcel 5055"
+    /// The Title for this token. ex. "Arch Nemesis: Mail Carrier" or "Parcel 5055"
     pub title: Option<String>,
-    /// free-form description of this token.
+    /// Free-form description of this token.
     pub description: Option<String>,
     /// URL to associated media, preferably to decentralized, content-addressed storage
     pub media: Option<String>,
@@ -52,7 +51,6 @@ pub struct RoyaltyArgs {
 }
 
 #[ext_contract(mintbase_nft)]
-#[automock]
 pub trait MintbaseNft {
     fn check_is_minter(&self, account_id: near_sdk::AccountId) -> bool;
 
@@ -73,13 +71,6 @@ pub trait MintbaseNft {
     ) -> PromiseOrValue<()>;
 
     fn nft_batch_burn(&mut self, token_ids: Vec<near_sdk::json_types::U64>);
-
-    fn nft_is_approved(
-        &self,
-        token_id: String,
-        approved_account_id: AccountId,
-        approval_id: Option<u64>,
-    ) -> bool;
 
     fn nft_approval_id(
         &self,
